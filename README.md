@@ -176,9 +176,23 @@ the contract ending. Refreshing is what keeps them alive, and the server charges
 plenty of life, which prices pointless churn).
 
 The phone wallet, Noah, solves this with silent push notifications that wake the
-app. A server has no such thing, so the gateway runs the keeper itself, every 6
-hours. If the gateway dies the container exits, rather than leaving a wallet
-nobody is refreshing.
+app, and this file used to say a server has no equivalent — which is why the
+gateway runs a keeper. **That was wrong about barkd, and is corrected here.**
+`barkd` 0.7.1 maintains itself: its daemon subscribes to the Ark server's round
+events and calls `join_round_for_maintenance_refresh` on the first attempt of
+each round, refreshing whatever sits under the expiry threshold. The setting
+that would switch that subscription off, `daemon_manual_sync`, defaults to
+`false`, and nothing here sets it. Rounds are started by the server on a timer
+and broadcast to every subscriber, including a wallet doing nothing else.
+
+So the keeper is a second mechanism, not the only one. It is kept because it is
+observable from outside — `/health` publishes when maintenance last succeeded,
+and barkd's own refresh publishes nothing — and because it refreshes on a
+schedule this side controls. A new deployment does not need one: `barkpay` runs
+the same barkd without a keeper, deliberately.
+
+If the gateway dies the container exits, rather than leaving a wallet nobody is
+refreshing.
 
 It does **not** shell out to `bark maintain`. That was the first design and it
 could never have worked:

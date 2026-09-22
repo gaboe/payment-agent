@@ -63,13 +63,20 @@ interface KeeperDeps {
   log: (event: string, fields?: Record<string, unknown>) => void;
 }
 
+/**
+ * One maintenance pass. It **throws** on every failure, and that is the whole
+ * contract: the caller records a success timestamp when this returns, and
+ * `/health` is derived from that timestamp. An early `return` on a failed sync,
+ * tip read, vtxo list or refresh would publish "healthy" while nothing was
+ * refreshed — the exact silence this file exists to prevent.
+ */
 export async function runKeeperOnce(deps: KeeperDeps): Promise<void> {
   const { bark, esploraUrl, thresholdBlocks, log } = deps;
 
   const sync = await bark("/api/v1/wallet/sync", { method: "POST" });
   if (!sync.ok) {
     log("keeper_sync_failed", { status: sync.status });
-    return;
+    throw new Error(`wallet sync failed with ${sync.status}`);
   }
 
   const tipRes = await fetch(`${esploraUrl}/blocks/tip/height`, {
@@ -77,25 +84,25 @@ export async function runKeeperOnce(deps: KeeperDeps): Promise<void> {
   });
   if (!tipRes.ok) {
     log("keeper_tip_failed", { status: tipRes.status });
-    return;
+    throw new Error(`esplora tip failed with ${tipRes.status}`);
   }
   const tip = Number(await tipRes.text());
   if (!Number.isFinite(tip)) {
     log("keeper_tip_unparseable");
-    return;
+    throw new Error("esplora tip is not a number");
   }
 
   const vtxoRes = await bark("/api/v1/wallet/vtxos");
   if (!vtxoRes.ok) {
     log("keeper_vtxos_failed", { status: vtxoRes.status });
-    return;
+    throw new Error(`listing vtxos failed with ${vtxoRes.status}`);
   }
   let vtxos: Vtxo[];
   try {
     vtxos = parseVtxos(await vtxoRes.json());
   } catch (e) {
     log("keeper_vtxos_unparseable", { error: String(e) });
-    return;
+    throw e;
   }
   const due = vtxosNeedingRefresh(vtxos, tip, thresholdBlocks);
 
@@ -113,8 +120,10 @@ export async function runKeeperOnce(deps: KeeperDeps): Promise<void> {
     method: "POST",
     body: JSON.stringify({ vtxos: due.map((v) => v.id) }),
   });
-  log(res.ok ? "keeper_refresh_submitted" : "keeper_refresh_failed", {
-    status: res.status,
-    body: res.ok ? undefined : (await res.text()).slice(0, 200),
-  });
+  if (!res.ok) {
+    const body = (await res.text()).slice(0, 200);
+    log("keeper_refresh_failed", { status: res.status, body });
+    throw new Error(`refreshing ${due.length} vtxo(s) failed with ${res.status}: ${body}`);
+  }
+  log("keeper_refresh_submitted", { status: res.status });
 }
